@@ -79,32 +79,73 @@ impl OpenCodeClient {
             return Err(anyhow::anyhow!("API error {}: {}", status, body));
         }
 
-        let stream = response
-            .bytes_stream()
-            .flat_map(|result| {
-                let items: Vec<Result<StreamChunk, ClientError>> = match result {
-                    Ok(chunk) => {
-                        let text = String::from_utf8_lossy(&chunk);
-                        let mut parsed = Vec::new();
-                        for line in text.lines() {
-                            let line = line.strip_prefix("data: ").unwrap_or(line);
-                            if line == "[DONE]" || line.is_empty() {
-                                continue;
-                            }
-                            match serde_json::from_str::<StreamChunk>(line) {
-                                Ok(chunk) => parsed.push(Ok(chunk)),
-                                Err(e) => parsed.push(Err(ClientError::Stream(
-                                    format!("Parse error: {}", e),
-                                ))),
-                            }
+        let byte_stream = response.bytes_stream().boxed();
+        let initial_state = (String::new(), byte_stream);
+
+        let stream = futures_util::stream::unfold(
+            initial_state,
+            |(mut buffer, mut byte_stream)| async move {
+                loop {
+                    if let Some(pos) = buffer.find('\n') {
+                        let line = buffer[..pos].to_string();
+                        buffer.drain(..=pos);
+                        buffer = buffer.trim_start().to_string();
+
+                        let trimmed = line.trim().to_string();
+
+                        if trimmed.is_empty() || trimmed == "data: [DONE]" {
+                            continue;
                         }
-                        parsed
+
+                        let json_str = trimmed.strip_prefix("data: ").unwrap_or(&trimmed);
+
+                        let items = match serde_json::from_str::<StreamChunk>(json_str) {
+                            Ok(chunk) => vec![Ok(chunk)],
+                            Err(e) => {
+                                vec![Err(ClientError::Stream(format!("Parse error: {}", e)))]
+                            }
+                        };
+
+                        return Some((items, (buffer, byte_stream)));
                     }
-                    Err(e) => vec![Err(ClientError::Network(e))],
-                };
-                futures_util::stream::iter(items)
-            })
-            .boxed();
+
+                    match byte_stream.next().await {
+                        Some(Ok(bytes)) => {
+                            let text = String::from_utf8_lossy(&bytes);
+                            buffer.push_str(&text);
+                        }
+                        Some(Err(e)) => {
+                            return Some((
+                                vec![Err(ClientError::Network(e))],
+                                (buffer, byte_stream),
+                            ));
+                        }
+                        None => {
+                            if !buffer.is_empty() {
+                                let trimmed = buffer.trim().to_string();
+                                if trimmed.is_empty() || trimmed == "data: [DONE]" {
+                                    return None;
+                                }
+                                let json_str =
+                                    trimmed.strip_prefix("data: ").unwrap_or(&trimmed);
+                                let items =
+                                    match serde_json::from_str::<StreamChunk>(json_str) {
+                                        Ok(chunk) => vec![Ok(chunk)],
+                                        Err(e) => vec![Err(ClientError::Stream(format!(
+                                            "Parse error: {}",
+                                            e
+                                        )))],
+                                    };
+                                return Some((items, (String::new(), byte_stream)));
+                            }
+                            return None;
+                        }
+                    }
+                }
+            },
+        )
+        .flat_map(futures_util::stream::iter)
+        .boxed();
 
         Ok(stream)
     }
