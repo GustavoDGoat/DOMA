@@ -12,6 +12,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let status_text = match app.state {
         crate::app::AppState::Boot => "BOOT SEQUENCE",
         crate::app::AppState::ApiKeyInput => "AWAITING KEY",
+        crate::app::AppState::SelectingModel => "MODEL SELECT",
         crate::app::AppState::Idle => "REACTING CORE - NOMINAL",
         crate::app::AppState::WaitingResponse => "PROCESSING - STREAM ACTIVE",
         crate::app::AppState::Error(_) => "CRITICAL EXCURSION",

@@ -1,7 +1,7 @@
 use crate::storage::StorageEngine;
 use anyhow::Result;
 
-const DEFAULT_API_BASE_URL: &str = "https://opencode.ai/zen/v1";
+const DEFAULT_API_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 
 pub struct Settings {
     storage: StorageEngine,
@@ -30,6 +30,15 @@ impl Settings {
 
     pub fn set_api_base_url(&self, url: &str) -> Result<()> {
         self.storage.config_set("api_base_url", url)?;
+        Ok(())
+    }
+
+    pub fn model(&self) -> Option<String> {
+        self.storage.config_get("model")
+    }
+
+    pub fn set_model(&self, model: &str) -> Result<()> {
+        self.storage.config_set("model", model)?;
         Ok(())
     }
 

@@ -9,10 +9,30 @@ use ratatui::Terminal;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
+const GO_MODELS_FREE: &[&str] = &[
+    "deepseek-v4-flash",
+    "qwen3.5-plus",
+    "qwen3.6-plus",
+    "minimax-m2.5",
+    "minimax-m2.7",
+    "mimo-v2.5",
+    "mimo-v2.5-pro",
+    "kimi-k2.5",
+    "kimi-k2.6",
+    "glm-5",
+    "glm-5.1",
+    "deepseek-v4-pro",
+];
+
+fn is_openai_compatible(model_id: &str) -> bool {
+    !model_id.starts_with("minimax")
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
     Boot,
     ApiKeyInput,
+    SelectingModel,
     Idle,
     WaitingResponse,
     Error(String),
@@ -41,10 +61,13 @@ pub struct App {
     pub key_error: Option<String>,
 
     pub model: String,
+    pub model_list: Vec<String>,
+    pub model_selection_index: usize,
 }
 
 impl App {
     fn new(storage: StorageEngine, settings: Settings) -> Self {
+        let saved_model = settings.model().unwrap_or_else(|| "deepseek-v4-flash".to_string());
         Self {
             state: AppState::Boot,
             storage,
@@ -61,7 +84,9 @@ impl App {
             cursor_visible: true,
             key_input_buffer: String::new(),
             key_error: None,
-            model: String::new(),
+            model: saved_model,
+            model_list: Vec::new(),
+            model_selection_index: 0,
         }
     }
 
@@ -172,8 +197,26 @@ pub async fn run(
         match client.validate_key().await {
             Ok(true) => {
                 let models = client.list_models().await.unwrap_or_default();
-                app.model = models.first().cloned().unwrap_or_else(|| "gpt-4o".to_string());
-                app.state = AppState::Idle;
+                app.model_list = models
+                    .into_iter()
+                    .filter(|m| is_openai_compatible(m))
+                    .collect();
+                if app.model_list.is_empty() {
+                    app.model_list = GO_MODELS_FREE
+                        .iter()
+                        .map(|&s| s.to_string())
+                        .collect();
+                }
+                app.model_selection_index = app
+                    .model_list
+                    .iter()
+                    .position(|m| *m == app.model)
+                    .unwrap_or(0);
+                if app.settings.model().is_some() {
+                    app.state = AppState::Idle;
+                } else {
+                    app.state = AppState::SelectingModel;
+                }
             }
             Ok(false) => {
                 app.state = AppState::ApiKeyInput;
@@ -238,6 +281,7 @@ pub async fn run(
 async fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.state {
         AppState::ApiKeyInput => handle_key_input_state(app, key).await?,
+        AppState::SelectingModel => handle_model_selection_state(app, key)?,
         AppState::Idle => handle_idle_state(app, key)?,
         AppState::WaitingResponse => handle_waiting_state(app, key)?,
         AppState::Error(_) => {
@@ -271,10 +315,28 @@ async fn handle_key_input_state(app: &mut App, key: KeyEvent) -> Result<()> {
                 Ok(true) => {
                     let _ = app.settings.set_api_key(&app.key_input_buffer);
                     let models = client.list_models().await.unwrap_or_default();
-                    app.model = models.first().cloned().unwrap_or_else(|| "gpt-4o".to_string());
+                    app.model_list = models
+                        .into_iter()
+                        .filter(|m| is_openai_compatible(m))
+                        .collect();
+                    if app.model_list.is_empty() {
+                        app.model_list = GO_MODELS_FREE
+                            .iter()
+                            .map(|&s| s.to_string())
+                            .collect();
+                    }
+                    app.model_selection_index = app
+                        .model_list
+                        .iter()
+                        .position(|m| *m == app.model)
+                        .unwrap_or(0);
                     app.key_input_buffer.clear();
                     app.key_error = None;
-                    app.state = AppState::Idle;
+                    if app.settings.model().is_some() {
+                        app.state = AppState::Idle;
+                    } else {
+                        app.state = AppState::SelectingModel;
+                    }
                 }
                 Ok(false) => {
                     app.key_error = Some("Invalid API key".to_string());
@@ -283,6 +345,33 @@ async fn handle_key_input_state(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.key_error = Some(format!("Connection error: {}", e));
                 }
             }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_model_selection_state(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Up => {
+            if app.model_selection_index > 0 {
+                app.model_selection_index -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.model_selection_index + 1 < app.model_list.len() {
+                app.model_selection_index += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(model) = app.model_list.get(app.model_selection_index) {
+                app.model = model.clone();
+                let _ = app.settings.set_model(model);
+            }
+            app.state = AppState::Idle;
+        }
+        KeyCode::Esc => {
+            app.state = AppState::Idle;
         }
         _ => {}
     }
@@ -304,6 +393,10 @@ fn handle_idle_state(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.messages.clear();
                         app.current_response.clear();
                         app.input.clear();
+                        return Ok(());
+                    }
+                    'm' | 'M' => {
+                        app.state = AppState::SelectingModel;
                         return Ok(());
                     }
                     'p' | 'P' => {

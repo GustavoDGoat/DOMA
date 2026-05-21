@@ -10,7 +10,7 @@ use crate::app::App;
 pub fn render(frame: &mut Frame, area: Rect, _app: &App) {
     let block = Block::default().style(Style::default().fg(Color::Green));
 
-    let left = "[Ctrl+P] Inject Payload  |  [Ctrl+N] New Session";
+    let left = "[Ctrl+M] Select Model  |  [Ctrl+N] New Session";
     let right = "[Ctrl+Q] Purge  |  [Esc] Safe Mode";
 
     let line = Line::from(vec![

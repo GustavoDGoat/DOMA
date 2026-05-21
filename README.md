@@ -67,6 +67,8 @@ The key is stored locally in the `sled` database at:
 | `Esc` | Cancel stream / close error |
 | `Ctrl+Q` | Quit |
 | `Ctrl+N` | New session |
+| `Ctrl+M` | Select model |
+| `↑/↓` | Navigate model list |
 | `PageUp/Down` | Scroll chat history |
 
 ## Development
