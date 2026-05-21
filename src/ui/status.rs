@@ -7,11 +7,20 @@ use ratatui::{
 };
 use crate::app::App;
 
-pub fn render(frame: &mut Frame, area: Rect, _app: &App) {
+pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().style(Style::default().fg(Color::Green));
 
-    let left = "[Ctrl+M] Select Model  |  [Ctrl+N] New Session";
-    let right = "[Ctrl+Q] Purge  |  [Esc] Safe Mode";
+    let scroll_indicator = if !app.auto_scroll {
+        " [SCROLL LOCK] "
+    } else {
+        ""
+    };
+
+    let left = format!(
+        "[Ctrl+M] Model{}|  [Ctrl+N] New Session",
+        scroll_indicator
+    );
+    let right = "[Ctrl+Q] Quit  |  [Esc] Cancel";
 
     let line = Line::from(vec![
         Span::styled(left, Style::default().fg(Color::Green)),
