@@ -17,10 +17,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let left = format!(
-        "[Ctrl+M] Model  |  [Ctrl+N] New Session{}",
+        "[Ctrl+P] Attach  |  [Ctrl+M] Model  |  [Ctrl+N] New Session{}",
         scroll_indicator
     );
-    let right = "[Ctrl+Q] Quit  |  [Esc] Cancel";
+    let right = "[Ctrl+D] Detach  |  [Ctrl+Q] Quit";
 
     let line = Line::from(vec![
         Span::styled(left, Style::default().fg(Color::Green)),

@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use crate::app::{App, AppState};
@@ -19,6 +19,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         AppState::SelectingModel => {
             render_main(frame, app);
             render_model_selection(frame, app);
+        }
+        AppState::PickingFile => {
+            render_main(frame, app);
+            render_overlay(frame, "AWAITING PAYLOAD INJECTION...", "Select an image file from the dialog", Color::Green);
+        }
+        AppState::ProcessingImage => {
+            render_main(frame, app);
+            render_overlay(frame, "PROCESSING PAYLOAD...", "Compressing and encoding image", Color::Rgb(255, 176, 0));
+        }
+        AppState::Error(ref msg) => {
+            let msg = msg.clone();
+            render_main(frame, app);
+            render_error_overlay(frame, &msg);
         }
         _ => render_main(frame, app),
     }
@@ -126,6 +139,107 @@ fn render_model_selection(frame: &mut Frame, app: &App) {
     let hint_area = Rect::new(popup_area.x, popup_area.bottom(), popup_area.width, 1);
     let hint_widget = Paragraph::new(hint)
         .style(Style::default().fg(Color::Green))
+        .alignment(Alignment::Center);
+    frame.render_widget(hint_widget, hint_area);
+}
+
+fn render_overlay(frame: &mut Frame, title: &str, subtitle: &str, color: Color) {
+    let area = frame.area();
+
+    let overlay_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(5),
+            Constraint::Percentage(40),
+        ])
+        .split(area)[1];
+
+    let overlay_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(30),
+            Constraint::Length(40),
+            Constraint::Percentage(30),
+        ])
+        .split(overlay_area)[1];
+
+    frame.render_widget(Clear, overlay_area);
+
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(title.to_string(), Style::default().fg(color))),
+        Line::from(""),
+        Line::from(Span::styled(subtitle.to_string(), Style::default().fg(Color::Green))),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ratatui::symbols::border::ROUNDED)
+        .style(Style::default().fg(color))
+        .title(" PAYLOAD INJECTION ")
+        .title_alignment(Alignment::Center);
+
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(Color::Green))
+        .alignment(Alignment::Center);
+
+    frame.render_widget(paragraph, overlay_area);
+}
+
+fn render_error_overlay(frame: &mut Frame, msg: &str) {
+    let area = frame.area();
+
+    let overlay_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(5),
+            Constraint::Percentage(40),
+        ])
+        .split(area)[1];
+
+    let overlay_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Length(50),
+            Constraint::Percentage(20),
+        ])
+        .split(overlay_area)[1];
+
+    frame.render_widget(Clear, overlay_area);
+
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "[!!] CRITICAL EXCURSION [!!]".to_string(),
+            Style::default().fg(Color::Rgb(255, 176, 0)),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(msg.to_string(), Style::default().fg(Color::Red))),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ratatui::symbols::border::ROUNDED)
+        .style(Style::default().fg(Color::Red))
+        .title(" SYSTEM FAULT ")
+        .title_alignment(Alignment::Center);
+
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(Color::Red))
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(paragraph, overlay_area);
+
+    let hint = " [Esc/Enter] Dismiss ";
+    let hint_area = Rect::new(overlay_area.x, overlay_area.bottom(), overlay_area.width, 1);
+    let hint_widget = Paragraph::new(hint)
+        .style(Style::default().fg(Color::Red))
         .alignment(Alignment::Center);
     frame.render_widget(hint_widget, hint_area);
 }

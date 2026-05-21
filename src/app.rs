@@ -4,8 +4,11 @@ use crate::storage::{SessionMeta, StorageEngine, StoredMessage};
 use crate::ui;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use image::GenericImageView;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use std::path::PathBuf;
+use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
@@ -24,8 +27,18 @@ const GO_MODELS_FREE: &[&str] = &[
     "deepseek-v4-pro",
 ];
 
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION: u32 = 1024;
+
 fn is_openai_compatible(model_id: &str) -> bool {
     !model_id.starts_with("minimax")
+}
+
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    pub filename: String,
+    pub data_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +46,8 @@ pub enum AppState {
     Boot,
     ApiKeyInput,
     SelectingModel,
+    PickingFile,
+    ProcessingImage,
     Idle,
     WaitingResponse,
     Error(String),
@@ -64,6 +79,63 @@ pub struct App {
     pub model: String,
     pub model_list: Vec<String>,
     pub model_selection_index: usize,
+
+    pub attached_image: Option<Attachment>,
+    file_dialog_rx: Option<std_mpsc::Receiver<Result<PathBuf>>>,
+    image_process_rx: Option<mpsc::Receiver<Result<Attachment>>>,
+}
+
+fn process_image(path: PathBuf) -> Result<Attachment> {
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "image".to_string());
+
+    let metadata = std::fs::metadata(&path)?;
+    if metadata.len() as usize > MAX_IMAGE_BYTES {
+        anyhow::bail!("Image too large (max 20MB)");
+    }
+
+    let img = image::open(&path)?;
+    let mut img = img;
+
+    let (w, h) = img.dimensions();
+    if w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION {
+        img = img.resize(MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION, image::imageops::FilterType::Lanczos3);
+    }
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|| "png".to_string());
+
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => {
+            img.write_to(&mut buf, image::ImageFormat::Jpeg)?;
+            "image/jpeg"
+        }
+        "gif" => {
+            img.write_to(&mut buf, image::ImageFormat::Gif)?;
+            "image/gif"
+        }
+        "webp" => {
+            img.write_to(&mut buf, image::ImageFormat::WebP)?;
+            "image/webp"
+        }
+        _ => {
+            img.write_to(&mut buf, image::ImageFormat::Png)?;
+            "image/png"
+        }
+    };
+
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, buf.get_ref());
+    let data_url = format!("data:{};base64,{}", mime, b64);
+
+    Ok(Attachment {
+        filename,
+        data_url,
+    })
 }
 
 impl App {
@@ -89,6 +161,9 @@ impl App {
             model: saved_model,
             model_list: Vec::new(),
             model_selection_index: 0,
+            attached_image: None,
+            file_dialog_rx: None,
+            image_process_rx: None,
         }
     }
 
@@ -123,13 +198,58 @@ impl App {
         Ok(())
     }
 
+    fn open_file_dialog(&mut self) {
+        let (tx, rx) = std_mpsc::channel();
+        self.file_dialog_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let result = rfd::FileDialog::new()
+                .add_filter("Images", IMAGE_EXTENSIONS)
+                .pick_file();
+            match result {
+                Some(path) => { let _ = tx.send(Ok(path)); }
+                None => { let _ = tx.send(Err(anyhow::anyhow!("No file selected"))); }
+            }
+        });
+
+        self.state = AppState::PickingFile;
+    }
+
+    fn start_image_processing(&mut self, path: PathBuf) {
+        let (tx, rx) = mpsc::channel(1);
+        self.image_process_rx = Some(rx);
+
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || process_image(path)).await;
+            match result {
+                Ok(Ok(attachment)) => { let _ = tx.send(Ok(attachment)).await; }
+                Ok(Err(e)) => { let _ = tx.send(Err(anyhow::anyhow!("{}", e))).await; }
+                Err(e) => { let _ = tx.send(Err(anyhow::anyhow!("Thread error: {}", e))).await; }
+            }
+        });
+
+        self.state = AppState::ProcessingImage;
+    }
+
     fn send_message(&mut self) {
-        if self.input.trim().is_empty() {
+        if self.input.trim().is_empty() && self.attached_image.is_none() {
             return;
         }
 
-        let user_msg = ChatMessage::new_text("user", self.input.trim());
-        let _ = self.save_message("user", self.input.trim());
+        let text = if self.input.trim().is_empty() {
+            "[image]".to_string()
+        } else {
+            self.input.trim().to_string()
+        };
+
+        let user_msg = if let Some(attachment) = self.attached_image.take() {
+            let msg = ChatMessage::new_multimodal("user", &text, &attachment.data_url);
+            let _ = self.save_message("user", &format!("[ATTACHED: {}] {}", attachment.filename, text));
+            msg
+        } else {
+            let _ = self.save_message("user", &text);
+            ChatMessage::new_text("user", &text)
+        };
 
         let mut api_messages = self.messages.clone();
         api_messages.push(user_msg.clone());
@@ -245,6 +365,45 @@ pub async fn run(
             break;
         }
 
+        // Check file dialog result
+        if let Some(rx) = &app.file_dialog_rx {
+            match rx.try_recv() {
+                Ok(Ok(path)) => {
+                    app.file_dialog_rx = None;
+                    app.start_image_processing(path);
+                }
+                Ok(Err(_)) => {
+                    app.file_dialog_rx = None;
+                    app.state = AppState::Idle;
+                }
+                Err(std_mpsc::TryRecvError::Empty) => {}
+                Err(std_mpsc::TryRecvError::Disconnected) => {
+                    app.file_dialog_rx = None;
+                    app.state = AppState::Idle;
+                }
+            }
+        }
+
+        // Check image processing result
+        if let Some(rx) = &mut app.image_process_rx {
+            match rx.try_recv() {
+                Ok(Ok(attachment)) => {
+                    app.attached_image = Some(attachment);
+                    app.image_process_rx = None;
+                    app.state = AppState::Idle;
+                }
+                Ok(Err(e)) => {
+                    app.image_process_rx = None;
+                    app.state = AppState::Error(format!("Image processing failed: {}", e));
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    app.image_process_rx = None;
+                    app.state = AppState::Idle;
+                }
+            }
+        }
+
         let event_available = event::poll(tick_rate)?;
 
         if event_available {
@@ -292,7 +451,14 @@ async fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         AppState::Idle => handle_idle_state(app, key)?,
         AppState::WaitingResponse => handle_waiting_state(app, key)?,
         AppState::Error(_) => {
+            if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
+                app.state = AppState::Idle;
+            }
+        }
+        AppState::PickingFile | AppState::ProcessingImage => {
             if key.code == KeyCode::Esc {
+                app.file_dialog_rx = None;
+                app.image_process_rx = None;
                 app.state = AppState::Idle;
             }
         }
@@ -400,6 +566,7 @@ fn handle_idle_state(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.messages.clear();
                         app.current_response.clear();
                         app.input.clear();
+                        app.attached_image = None;
                         app.follow_bottom = true;
                         app.scroll_offset = 0;
                         return Ok(());
@@ -409,6 +576,11 @@ fn handle_idle_state(app: &mut App, key: KeyEvent) -> Result<()> {
                         return Ok(());
                     }
                     'p' | 'P' => {
+                        app.open_file_dialog();
+                        return Ok(());
+                    }
+                    'd' | 'D' => {
+                        app.attached_image = None;
                         return Ok(());
                     }
                     _ => {}

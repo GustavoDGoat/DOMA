@@ -38,6 +38,16 @@ impl ContentBlock {
             image_url: None,
         }
     }
+
+    pub fn image(data_url: &str) -> Self {
+        Self {
+            block_type: "image_url".to_string(),
+            text: None,
+            image_url: Some(ImageUrl {
+                url: data_url.to_string(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +66,16 @@ impl ChatMessage {
         Self {
             role: role.to_string(),
             content: MessageContent::Text(text.to_string()),
+        }
+    }
+
+    pub fn new_multimodal(role: &str, text: &str, image_data_url: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            content: MessageContent::MultiModal(vec![
+                ContentBlock::text(text),
+                ContentBlock::image(image_data_url),
+            ]),
         }
     }
 
