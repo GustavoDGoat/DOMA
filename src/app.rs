@@ -262,16 +262,18 @@ pub async fn run(
             }
         }
 
+        if !content_buf.is_empty() {
+            app.current_response.push_str(&content_buf);
+        }
+
         if stream_done {
-            let _ = app.save_message("assistant", &content_buf);
+            let response = std::mem::take(&mut app.current_response);
+            let _ = app.save_message("assistant", &response);
             app.messages
-                .push(ChatMessage::new_text("assistant", &content_buf));
-            app.current_response.clear();
+                .push(ChatMessage::new_text("assistant", &response));
             app.state = AppState::Idle;
             app.stream_rx = None;
             app.stream_handle = None;
-        } else if !content_buf.is_empty() {
-            app.current_response.push_str(&content_buf);
         }
     }
 
