@@ -1,16 +1,43 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: Vec<ContentBlock>,
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    MultiModal(Vec<ContentBlock>),
+}
+
+impl MessageContent {
+    pub fn text_content(&self) -> String {
+        match self {
+            MessageContent::Text(t) => t.clone(),
+            MessageContent::MultiModal(blocks) => blocks
+                .iter()
+                .filter_map(|b| b.text.as_deref())
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ContentBlock {
-    Text { text: String },
-    Image { image_url: ImageUrl },
+pub struct ContentBlock {
+    #[serde(rename = "type")]
+    pub block_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<ImageUrl>,
+}
+
+impl ContentBlock {
+    pub fn text(text: &str) -> Self {
+        Self {
+            block_type: "text".to_string(),
+            text: Some(text.to_string()),
+            image_url: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,25 +45,22 @@ pub struct ImageUrl {
     pub url: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: MessageContent,
+}
+
 impl ChatMessage {
     pub fn new_text(role: &str, text: &str) -> Self {
         Self {
             role: role.to_string(),
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
+            content: MessageContent::Text(text.to_string()),
         }
     }
 
     pub fn text_content(&self) -> String {
-        self.content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.clone()),
-                ContentBlock::Image { .. } => None,
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+        self.content.text_content()
     }
 }
 
