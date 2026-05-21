@@ -10,14 +10,14 @@ use crate::app::App;
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().style(Style::default().fg(Color::Green));
 
-    let scroll_indicator = if !app.auto_scroll {
+    let scroll_indicator = if !app.follow_bottom {
         " [SCROLL LOCK] "
     } else {
         ""
     };
 
     let left = format!(
-        "[Ctrl+M] Model{}|  [Ctrl+N] New Session",
+        "[Ctrl+M] Model  |  [Ctrl+N] New Session{}",
         scroll_indicator
     );
     let right = "[Ctrl+Q] Quit  |  [Esc] Cancel";

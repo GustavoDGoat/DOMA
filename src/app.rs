@@ -50,7 +50,7 @@ pub struct App {
     pub input: String,
     pub current_response: String,
     pub scroll_offset: usize,
-    pub auto_scroll: bool,
+    pub follow_bottom: bool,
     pub should_quit: bool,
 
     stream_rx: Option<mpsc::Receiver<String>>,
@@ -79,7 +79,7 @@ impl App {
             input: String::new(),
             current_response: String::new(),
             scroll_offset: 0,
-            auto_scroll: true,
+            follow_bottom: true,
             should_quit: false,
             stream_rx: None,
             stream_handle: None,
@@ -136,7 +136,7 @@ impl App {
         self.messages.push(user_msg);
         self.input.clear();
         self.current_response.clear();
-        self.auto_scroll = true;
+        self.follow_bottom = true;
         self.scroll_offset = 0;
 
         let base_url = self.settings.api_base_url();
@@ -268,11 +268,6 @@ pub async fn run(
 
         if !content_buf.is_empty() {
             app.current_response.push_str(&content_buf);
-            if app.auto_scroll {
-                let newlines = content_buf.lines().count().max(1);
-                let wrapped = content_buf.len() / 80;
-                app.scroll_offset = app.scroll_offset.saturating_add(newlines + wrapped);
-            }
         }
 
         if stream_done {
@@ -280,6 +275,7 @@ pub async fn run(
             let _ = app.save_message("assistant", &response);
             app.messages
                 .push(ChatMessage::new_text("assistant", &response));
+            app.follow_bottom = true;
             app.state = AppState::Idle;
             app.stream_rx = None;
             app.stream_handle = None;
@@ -404,6 +400,8 @@ fn handle_idle_state(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.messages.clear();
                         app.current_response.clear();
                         app.input.clear();
+                        app.follow_bottom = true;
+                        app.scroll_offset = 0;
                         return Ok(());
                     }
                     'm' | 'M' => {
@@ -428,11 +426,22 @@ fn handle_idle_state(app: &mut App, key: KeyEvent) -> Result<()> {
             app.should_quit = true;
         }
         KeyCode::PageUp => {
-            app.auto_scroll = false;
-            app.scroll_offset = app.scroll_offset.saturating_sub(5);
+            app.follow_bottom = false;
+            if app.scroll_offset >= 5 {
+                app.scroll_offset -= 5;
+            } else {
+                app.scroll_offset = 0;
+            }
         }
         KeyCode::PageDown => {
-            app.scroll_offset = app.scroll_offset.saturating_add(5);
+            app.scroll_offset += 5;
+        }
+        KeyCode::Up => {
+            app.follow_bottom = false;
+            app.scroll_offset = app.scroll_offset.saturating_sub(1);
+        }
+        KeyCode::Down => {
+            app.scroll_offset += 1;
         }
         _ => {}
     }
@@ -453,6 +462,24 @@ fn handle_waiting_state(app: &mut App, key: KeyEvent) -> Result<()> {
                 handle.abort();
             }
             app.should_quit = true;
+        }
+        KeyCode::PageUp => {
+            app.follow_bottom = false;
+            if app.scroll_offset >= 5 {
+                app.scroll_offset -= 5;
+            } else {
+                app.scroll_offset = 0;
+            }
+        }
+        KeyCode::PageDown => {
+            app.scroll_offset += 5;
+        }
+        KeyCode::Up => {
+            app.follow_bottom = false;
+            app.scroll_offset = app.scroll_offset.saturating_sub(1);
+        }
+        KeyCode::Down => {
+            app.scroll_offset += 1;
         }
         _ => {}
     }
