@@ -370,7 +370,7 @@ impl App {
             let cmd = text.to_lowercase();
             match cmd.as_str() {
                 "/help" => {
-                    let help = "Available commands:\n  /help    - Show this help\n  /clear   - Clear current session\n  /models  - Select model\n  /new     - New session\n  /export  - Export session to JSON\n  /import  - Import session from JSON\n  /undo    - Remove last response\n\nKeybindings:\n  Ctrl+P   Attach image\n  Ctrl+O   Switch session\n  Ctrl+F   Search messages\n  Ctrl+M   Select model\n  Ctrl+N   New session\n  Ctrl+D   Detach image\n  Ctrl+Q   Quit\n  PgUp/Dn  Scroll\n  Esc      Cancel stream";
+                    let help = "Available commands:\n  /help    - Show this help\n  /clear   - Clear current session\n  /models  - Select model\n  /new     - New session\n  /export  - Export session to JSON\n  /import  - Import session from JSON\n  /undo    - Remove last response\n\nKeybindings:\n  Ctrl+P   Attach image\n  Ctrl+B   Switch session\n  Ctrl+F   Search messages\n  Ctrl+M   Select model\n  Ctrl+N   New session\n  Ctrl+D   Detach image\n  Ctrl+Q   Quit\n  PgUp/Dn  Scroll\n  Esc      Cancel stream";
                     self.messages.push(ChatMessage::new_text("assistant", help));
                     return;
                 }
@@ -907,7 +907,7 @@ fn handle_idle_state(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.state = AppState::Searching;
                         return Ok(());
                     }
-                    'o' | 'O' => {
+                    'b' | 'B' => {
                         app.sessions = app.storage.list_sessions().unwrap_or_default();
                         app.session_selection_index = app
                             .sessions

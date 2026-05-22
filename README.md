@@ -99,7 +99,7 @@ Type these directly in the input bar:
 | `Esc` | Cancel stream / close error / close popup / abort operation |
 | `Ctrl+P` | Attach an image (opens native file picker) |
 | `Ctrl+D` | Detach / remove attached image |
-| `Ctrl+O` | Open session switcher popup |
+| `Ctrl+B` | Open session switcher popup |
 | `Ctrl+F` | Open search overlay |
 | `Ctrl+M` | Open model selection popup |
 | `Ctrl+N` | Create new session |
