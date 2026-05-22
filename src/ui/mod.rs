@@ -31,6 +31,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             render_main(frame, app);
             render_session_list(frame, app);
         }
+        AppState::Searching => {
+            render_main(frame, app);
+            render_search_overlay(frame, app);
+        }
+        AppState::Exporting => {
+            render_main(frame, app);
+            render_overlay(frame, "EXPORTING SESSION...", "Choose save location", Color::Green);
+        }
+        AppState::Importing => {
+            render_main(frame, app);
+            render_overlay(frame, "IMPORTING SESSION...", "Pick a session file", Color::Green);
+        }
         AppState::PickingFile => {
             render_main(frame, app);
             render_overlay(frame, "AWAITING PAYLOAD INJECTION...", "Select an image file from the dialog", Color::Green);
@@ -234,6 +246,84 @@ fn render_session_list(frame: &mut Frame, app: &App) {
     frame.render_widget(hint_widget, hint_area);
 }
 
+fn render_search_overlay(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    let popup_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Length(
+                (app.search_results.len() as u16 + 6).min(area.height.saturating_sub(8)),
+            ),
+            Constraint::Percentage(20),
+        ])
+        .split(area)[1];
+
+    let popup_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(15),
+            Constraint::Length(55),
+            Constraint::Percentage(15),
+        ])
+        .split(popup_area)[1];
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(ratatui::symbols::border::ROUNDED)
+        .style(Style::default().fg(Color::Green))
+        .title(" SEARCH ")
+        .title_alignment(Alignment::Center);
+
+    let search_display = if app.search_query.is_empty() {
+        "Type to search...".to_string()
+    } else {
+        format!("> {}  ({} results)", app.search_query, app.search_results.len())
+    };
+
+    let mut lines = vec![
+        Line::from(Span::styled(search_display, Style::default().fg(Color::Rgb(255, 176, 0)))),
+        Line::from(""),
+    ];
+
+    let max_results = (popup_area.height.saturating_sub(6) as usize).max(1);
+    for (i, (_, msg)) in app.search_results.iter().take(max_results).enumerate() {
+        let prefix = if i == app.search_index { " > " } else { "   " };
+        let role = if msg.role == "user" { "U" } else { "A" };
+        let text = msg.content.lines().next().unwrap_or(&msg.content);
+        let display = if text.len() > 40 {
+            format!("{}...", &text[..40])
+        } else {
+            text.to_string()
+        };
+        let style = if i == app.search_index {
+            Style::default().fg(Color::Rgb(255, 176, 0))
+        } else {
+            Style::default().fg(Color::Green)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{}{}: {}", prefix, role, display),
+            style,
+        )));
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .style(Style::default().fg(Color::Green));
+
+    frame.render_widget(paragraph, popup_area);
+
+    let hint = " Type query  [Up/Down] Navigate  [Enter] Jump  [Esc] Cancel ";
+    let hint_area = Rect::new(popup_area.x, popup_area.bottom(), popup_area.width, 1);
+    let hint_widget = Paragraph::new(hint)
+        .style(Style::default().fg(Color::Green))
+        .alignment(Alignment::Center);
+    frame.render_widget(hint_widget, hint_area);
+}
+
 fn render_overlay(frame: &mut Frame, title: &str, subtitle: &str, color: Color) {
     let area = frame.area();
 
@@ -268,7 +358,7 @@ fn render_overlay(frame: &mut Frame, title: &str, subtitle: &str, color: Color) 
         .borders(Borders::ALL)
         .border_set(ratatui::symbols::border::ROUNDED)
         .style(Style::default().fg(color))
-        .title(" PAYLOAD INJECTION ")
+        .title(" OPERATION ")
         .title_alignment(Alignment::Center);
 
     let paragraph = Paragraph::new(text)

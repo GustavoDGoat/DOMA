@@ -1,0 +1,16 @@
+# Maintainer: GustavoDGoat <your-email@example.com>
+pkgname=doma-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Terminal-based general-purpose AI chat interface with 90s nuclear aesthetic"
+arch=('x86_64')
+url="https://github.com/GustavoDGoat/DOMA"
+license=('MIT')
+depends=()
+source=("https://github.com/GustavoDGoat/DOMA/releases/download/v${pkgver}/doma-x86_64-unknown-linux-gnu.tar.gz")
+sha256sums=('PLACEHOLDER_LINUX')
+
+package() {
+  cd "$srcdir"
+  install -Dm755 doma "$pkgdir/usr/bin/doma"
+}

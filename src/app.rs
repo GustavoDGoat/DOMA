@@ -4,6 +4,7 @@ use crate::storage::{SessionMeta, StorageEngine, StoredMessage};
 use crate::ui;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use serde::{Deserialize, Serialize};
 use image::GenericImageView;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -11,6 +12,10 @@ use std::path::PathBuf;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
+
+type ImageDialogRx = std_mpsc::Receiver<Result<PathBuf>>;
+type ImageProcessRx = tokio::sync::mpsc::Receiver<Result<Attachment>>;
+type ImportRx = std_mpsc::Receiver<Result<(String, Vec<StoredMessage>)>>;
 
 const GO_MODELS_FREE: &[&str] = &[
     "deepseek-v4-flash",
@@ -41,6 +46,13 @@ pub struct Attachment {
     pub data_url: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportData {
+    pub version: u32,
+    pub session: SessionMeta,
+    pub messages: Vec<StoredMessage>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
     Boot,
@@ -49,6 +61,9 @@ pub enum AppState {
     SessionList,
     PickingFile,
     ProcessingImage,
+    Exporting,
+    Importing,
+    Searching,
     Idle,
     WaitingResponse,
     Error(String),
@@ -84,8 +99,15 @@ pub struct App {
     pub session_selection_index: usize,
 
     pub attached_image: Option<Attachment>,
-    file_dialog_rx: Option<std_mpsc::Receiver<Result<PathBuf>>>,
-    image_process_rx: Option<mpsc::Receiver<Result<Attachment>>>,
+    file_dialog_rx: Option<ImageDialogRx>,
+    image_process_rx: Option<ImageProcessRx>,
+    export_rx: Option<std_mpsc::Receiver<Result<()>>>,
+    import_rx: Option<ImportRx>,
+
+    // Search
+    pub search_query: String,
+    pub search_results: Vec<(usize, StoredMessage)>,
+    pub search_index: usize,
 }
 
 fn process_image(path: PathBuf) -> Result<Attachment> {
@@ -168,6 +190,11 @@ impl App {
             attached_image: None,
             file_dialog_rx: None,
             image_process_rx: None,
+            export_rx: None,
+            import_rx: None,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_index: 0,
         }
     }
 
@@ -235,6 +262,98 @@ impl App {
         self.state = AppState::ProcessingImage;
     }
 
+    fn start_export(&mut self) {
+        let (tx, rx) = std_mpsc::channel();
+        self.export_rx = Some(rx);
+
+        let messages = self.storage.list_messages(&self.active_session_id).unwrap_or_default();
+        let session_meta = self
+            .sessions
+            .iter()
+            .find(|s| s.id == self.active_session_id)
+            .cloned()
+            .unwrap_or_else(|| SessionMeta {
+                id: self.active_session_id.clone(),
+                title: "Session".to_string(),
+                created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            });
+
+        std::thread::spawn(move || {
+            let path = rfd::FileDialog::new()
+                .add_filter("JSON", &["json"])
+                .set_file_name("doma-session.json")
+                .save_file();
+            let path = match path {
+                Some(p) => p,
+                None => { let _ = tx.send(Err(anyhow::anyhow!("Export cancelled"))); return; }
+            };
+
+            let data = ExportData {
+                version: 1,
+                session: session_meta,
+                messages,
+            };
+
+            let json = serde_json::to_string_pretty(&data);
+            let json = match json {
+                Ok(j) => j,
+                Err(e) => { let _ = tx.send(Err(anyhow::anyhow!("Serialize error: {}", e))); return; }
+            };
+
+            match std::fs::write(&path, &json) {
+                Ok(_) => { let _ = tx.send(Ok(())); }
+                Err(e) => { let _ = tx.send(Err(anyhow::anyhow!("Write error: {}", e))); }
+            }
+        });
+
+        self.state = AppState::Exporting;
+    }
+
+    fn start_import(&mut self) {
+        let (tx, rx) = std_mpsc::channel();
+        self.import_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let path = rfd::FileDialog::new()
+                .add_filter("JSON", &["json"])
+                .pick_file();
+            let path = match path {
+                Some(p) => p,
+                None => { let _ = tx.send(Err(anyhow::anyhow!("Import cancelled"))); return; }
+            };
+
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => { let _ = tx.send(Err(anyhow::anyhow!("Read error: {}", e))); return; }
+            };
+
+            let data: ExportData = match serde_json::from_str(&content) {
+                Ok(d) => d,
+                Err(e) => { let _ = tx.send(Err(anyhow::anyhow!("Parse error: {}", e))); return; }
+            };
+
+            let _ = tx.send(Ok((data.session.title, data.messages)));
+        });
+
+        self.state = AppState::Importing;
+    }
+
+    fn update_search(&mut self) {
+        self.search_results.clear();
+        let query = self.search_query.to_lowercase();
+        if query.is_empty() {
+            return;
+        }
+        if let Ok(stored) = self.storage.list_messages(&self.active_session_id) {
+            for (i, msg) in stored.iter().enumerate() {
+                if msg.content.to_lowercase().contains(&query) {
+                    self.search_results.push((i, msg.clone()));
+                }
+            }
+        }
+        self.search_index = 0;
+    }
+
     fn send_message(&mut self) {
         if self.input.trim().is_empty() && self.attached_image.is_none() {
             return;
@@ -251,7 +370,7 @@ impl App {
             let cmd = text.to_lowercase();
             match cmd.as_str() {
                 "/help" => {
-                    let help = "Available commands:\n  /help    - Show this help\n  /clear   - Clear current session\n  /models  - Select model\n  /new     - New session\n  /undo    - Remove last response\n\nKeybindings:\n  Ctrl+P   Attach image\n  Ctrl+S   Switch session\n  Ctrl+M   Select model\n  Ctrl+N   New session\n  Ctrl+D   Detach image\n  Ctrl+Q   Quit\n  PgUp/Dn  Scroll\n  Esc      Cancel stream";
+                    let help = "Available commands:\n  /help    - Show this help\n  /clear   - Clear current session\n  /models  - Select model\n  /new     - New session\n  /export  - Export session to JSON\n  /import  - Import session from JSON\n  /undo    - Remove last response\n\nKeybindings:\n  Ctrl+P   Attach image\n  Ctrl+S   Switch session\n  Ctrl+F   Search messages\n  Ctrl+M   Select model\n  Ctrl+N   New session\n  Ctrl+D   Detach image\n  Ctrl+Q   Quit\n  PgUp/Dn  Scroll\n  Esc      Cancel stream";
                     self.messages.push(ChatMessage::new_text("assistant", help));
                     return;
                 }
@@ -273,6 +392,14 @@ impl App {
                         self.follow_bottom = true;
                         self.scroll_offset = 0;
                     }
+                    return;
+                }
+                "/export" => {
+                    self.start_export();
+                    return;
+                }
+                "/import" => {
+                    self.start_import();
                     return;
                 }
                 "/undo" => {
@@ -433,7 +560,7 @@ pub async fn run(
             break;
         }
 
-        // Check file dialog result
+        // Check file dialog result (image)
         if let Some(rx) = &app.file_dialog_rx {
             match rx.try_recv() {
                 Ok(Ok(path)) => {
@@ -467,6 +594,60 @@ pub async fn run(
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                     app.image_process_rx = None;
+                    app.state = AppState::Idle;
+                }
+            }
+        }
+
+        // Check export result
+        if let Some(rx) = &app.export_rx {
+            match rx.try_recv() {
+                Ok(Ok(())) => {
+                    app.export_rx = None;
+                    app.messages
+                        .push(ChatMessage::new_text("assistant", "Session exported."));
+                    app.state = AppState::Idle;
+                }
+                Ok(Err(e)) => {
+                    app.export_rx = None;
+                    app.state = AppState::Error(format!("Export failed: {}", e));
+                }
+                Err(std_mpsc::TryRecvError::Empty) => {}
+                Err(std_mpsc::TryRecvError::Disconnected) => {
+                    app.export_rx = None;
+                    app.state = AppState::Idle;
+                }
+            }
+        }
+
+        // Check import result
+        if let Some(rx) = &app.import_rx {
+            match rx.try_recv() {
+                Ok(Ok((title, messages))) => {
+                    app.import_rx = None;
+                    if let Ok(id) = app.storage.create_session(&title) {
+                        for msg in &messages {
+                            let _ = app.storage.append_message(&id, msg);
+                        }
+                        app.active_session_id = id;
+                        app.messages.clear();
+                        app.messages = messages
+                            .into_iter()
+                            .map(|m| ChatMessage::new_text(&m.role, &m.content))
+                            .collect();
+                        app.current_response.clear();
+                        app.follow_bottom = true;
+                        app.scroll_offset = 0;
+                    }
+                    app.state = AppState::Idle;
+                }
+                Ok(Err(e)) => {
+                    app.import_rx = None;
+                    app.state = AppState::Error(format!("Import failed: {}", e));
+                }
+                Err(std_mpsc::TryRecvError::Empty) => {}
+                Err(std_mpsc::TryRecvError::Disconnected) => {
+                    app.import_rx = None;
                     app.state = AppState::Idle;
                 }
             }
@@ -517,6 +698,7 @@ async fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
         AppState::ApiKeyInput => handle_key_input_state(app, key).await?,
         AppState::SelectingModel => handle_model_selection_state(app, key)?,
         AppState::SessionList => handle_session_list_state(app, key)?,
+        AppState::Searching => handle_search_state(app, key)?,
         AppState::Idle => handle_idle_state(app, key)?,
         AppState::WaitingResponse => handle_waiting_state(app, key)?,
         AppState::Error(_) => {
@@ -524,10 +706,13 @@ async fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.state = AppState::Idle;
             }
         }
-        AppState::PickingFile | AppState::ProcessingImage => {
+        AppState::PickingFile | AppState::ProcessingImage
+        | AppState::Exporting | AppState::Importing => {
             if key.code == KeyCode::Esc {
                 app.file_dialog_rx = None;
                 app.image_process_rx = None;
+                app.export_rx = None;
+                app.import_rx = None;
                 app.state = AppState::Idle;
             }
         }
@@ -628,6 +813,45 @@ fn handle_session_list_state(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+fn handle_search_state(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Char(c) => {
+            app.search_query.push(c);
+            app.update_search();
+        }
+        KeyCode::Backspace => {
+            app.search_query.pop();
+            app.update_search();
+        }
+        KeyCode::Up => {
+            if app.search_index > 0 {
+                app.search_index -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.search_index + 1 < app.search_results.len() {
+                app.search_index += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some((idx, _)) = app.search_results.get(app.search_index) {
+                app.scroll_offset = *idx;
+                app.follow_bottom = false;
+            }
+            app.search_query.clear();
+            app.search_results.clear();
+            app.state = AppState::Idle;
+        }
+        KeyCode::Esc => {
+            app.search_query.clear();
+            app.search_results.clear();
+            app.state = AppState::Idle;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn handle_model_selection_state(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Up => {
@@ -673,6 +897,14 @@ fn handle_idle_state(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.attached_image = None;
                         app.follow_bottom = true;
                         app.scroll_offset = 0;
+                        return Ok(());
+                    }
+                    'f' | 'F' => {
+                        app.search_query.clear();
+                        app.search_results.clear();
+                        app.search_index = 0;
+                        app.update_search();
+                        app.state = AppState::Searching;
                         return Ok(());
                     }
                     's' | 'S' => {

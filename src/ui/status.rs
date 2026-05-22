@@ -17,10 +17,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let left = format!(
-        "[P] Attach  |  [S] Sess  |  [M] Model  |  [N] New{}",
+        "[F] Search  |  [P] Attach  |  [S] Sess  |  [M] Model{}",
         scroll_indicator
     );
-    let right = "[D] Detach  |  [Q] Quit";
+    let right = "[N] New  |  [D] Detach  |  [Q] Quit";
 
     let line = Line::from(vec![
         Span::styled(left, Style::default().fg(Color::Green)),
