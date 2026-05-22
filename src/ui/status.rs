@@ -17,7 +17,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let left = format!(
-        "[F] Search  |  [P] Attach  |  [S] Sess  |  [M] Model{}",
+        "[F] Search  |  [P] Attach  |  [O] Sess  |  [M] Model{}",
         scroll_indicator
     );
     let right = "[N] New  |  [D] Detach  |  [Q] Quit";
