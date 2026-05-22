@@ -13,6 +13,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         crate::app::AppState::Boot => "BOOT SEQUENCE",
         crate::app::AppState::ApiKeyInput => "AWAITING KEY",
         crate::app::AppState::SelectingModel => "MODEL SELECT",
+        crate::app::AppState::SessionList => "SESSION LIST",
         crate::app::AppState::PickingFile => "PAYLOAD INJECTION - AWAITING FILE",
         crate::app::AppState::ProcessingImage => "PAYLOAD INJECTION - PROCESSING",
         crate::app::AppState::Idle => "REACTING CORE - NOMINAL",

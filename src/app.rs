@@ -46,6 +46,7 @@ pub enum AppState {
     Boot,
     ApiKeyInput,
     SelectingModel,
+    SessionList,
     PickingFile,
     ProcessingImage,
     Idle,
@@ -79,6 +80,8 @@ pub struct App {
     pub model: String,
     pub model_list: Vec<String>,
     pub model_selection_index: usize,
+
+    pub session_selection_index: usize,
 
     pub attached_image: Option<Attachment>,
     file_dialog_rx: Option<std_mpsc::Receiver<Result<PathBuf>>>,
@@ -161,6 +164,7 @@ impl App {
             model: saved_model,
             model_list: Vec::new(),
             model_selection_index: 0,
+            session_selection_index: 0,
             attached_image: None,
             file_dialog_rx: None,
             image_process_rx: None,
@@ -242,6 +246,48 @@ impl App {
             self.input.trim().to_string()
         };
 
+        if text.starts_with('/') {
+            self.input.clear();
+            let cmd = text.to_lowercase();
+            match cmd.as_str() {
+                "/help" => {
+                    let help = "Available commands:\n  /help    - Show this help\n  /clear   - Clear current session\n  /models  - Select model\n  /new     - New session\n  /undo    - Remove last response\n\nKeybindings:\n  Ctrl+P   Attach image\n  Ctrl+S   Switch session\n  Ctrl+M   Select model\n  Ctrl+N   New session\n  Ctrl+D   Detach image\n  Ctrl+Q   Quit\n  PgUp/Dn  Scroll\n  Esc      Cancel stream";
+                    self.messages.push(ChatMessage::new_text("assistant", help));
+                    return;
+                }
+                "/clear" => {
+                    self.messages.clear();
+                    self.current_response.clear();
+                    return;
+                }
+                "/models" => {
+                    self.state = AppState::SelectingModel;
+                    return;
+                }
+                "/new" => {
+                    if let Ok(id) = self.storage.create_session("New Session") {
+                        self.active_session_id = id;
+                        self.messages.clear();
+                        self.current_response.clear();
+                        self.attached_image = None;
+                        self.follow_bottom = true;
+                        self.scroll_offset = 0;
+                    }
+                    return;
+                }
+                "/undo" => {
+                    if let Some(pos) = self.messages.iter().rposition(|m| m.role == "assistant") {
+                        self.messages.remove(pos);
+                    }
+                    return;
+                }
+                _ => {
+                    self.messages.push(ChatMessage::new_text("assistant", &format!("Unknown command: {}\nType /help for available commands.", text)));
+                    return;
+                }
+            }
+        }
+
         let user_msg = if let Some(attachment) = self.attached_image.take() {
             let msg = ChatMessage::new_multimodal("user", &text, &attachment.data_url);
             let _ = self.save_message("user", &format!("[ATTACHED: {}] {}", attachment.filename, text));
@@ -254,6 +300,28 @@ impl App {
         let mut api_messages = self.messages.clone();
         api_messages.push(user_msg.clone());
         self.messages.push(user_msg);
+
+        let text_for_title = if self.attached_image.is_some() {
+            text.replace("[image]", "")
+        } else {
+            text.clone()
+        };
+        if !text_for_title.is_empty() {
+            if let Ok(sessions) = self.storage.list_sessions() {
+                if let Some(current) = sessions.iter().find(|s| s.id == self.active_session_id) {
+                    if current.title == "New Session" {
+                        let first_line = text_for_title.lines().next().unwrap_or(&text_for_title);
+                        let title = if first_line.len() > 40 {
+                            format!("{}...", &first_line[..40])
+                        } else {
+                            first_line.to_string()
+                        };
+                        let _ = self.storage.update_session_title(&self.active_session_id, &title);
+                    }
+                }
+            }
+        }
+
         self.input.clear();
         self.current_response.clear();
         self.follow_bottom = true;
@@ -448,6 +516,7 @@ async fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<()> {
     match app.state {
         AppState::ApiKeyInput => handle_key_input_state(app, key).await?,
         AppState::SelectingModel => handle_model_selection_state(app, key)?,
+        AppState::SessionList => handle_session_list_state(app, key)?,
         AppState::Idle => handle_idle_state(app, key)?,
         AppState::WaitingResponse => handle_waiting_state(app, key)?,
         AppState::Error(_) => {
@@ -524,6 +593,41 @@ async fn handle_key_input_state(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+fn handle_session_list_state(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Up => {
+            if app.session_selection_index > 0 {
+                app.session_selection_index -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.session_selection_index + 1 < app.sessions.len() {
+                app.session_selection_index += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(session) = app.sessions.get(app.session_selection_index) {
+                let new_id = session.id.clone();
+                app.messages.clear();
+                app.current_response.clear();
+                app.input.clear();
+                app.attached_image = None;
+                app.follow_bottom = true;
+                app.scroll_offset = 0;
+                app.active_session_id = new_id.clone();
+                let _ = app.load_messages();
+                let _ = app.settings.set_active_session_id(&new_id);
+            }
+            app.state = AppState::Idle;
+        }
+        KeyCode::Esc => {
+            app.state = AppState::Idle;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn handle_model_selection_state(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Up => {
@@ -569,6 +673,16 @@ fn handle_idle_state(app: &mut App, key: KeyEvent) -> Result<()> {
                         app.attached_image = None;
                         app.follow_bottom = true;
                         app.scroll_offset = 0;
+                        return Ok(());
+                    }
+                    's' | 'S' => {
+                        app.sessions = app.storage.list_sessions().unwrap_or_default();
+                        app.session_selection_index = app
+                            .sessions
+                            .iter()
+                            .position(|s| s.id == app.active_session_id)
+                            .unwrap_or(0);
+                        app.state = AppState::SessionList;
                         return Ok(());
                     }
                     'm' | 'M' => {

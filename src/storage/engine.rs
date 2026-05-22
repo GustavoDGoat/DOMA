@@ -103,6 +103,18 @@ impl StorageEngine {
         Ok(id)
     }
 
+    pub fn update_session_title(&self, id: &str, title: &str) -> Result<()> {
+        let key = id.as_bytes();
+        if let Some(existing) = self.sessions.get(key)? {
+            let mut meta: SessionMeta = serde_json::from_slice(&existing)?;
+            meta.title = title.to_string();
+            let value = serde_json::to_vec(&meta)?;
+            self.sessions.insert(key, value)?;
+            self.sessions.flush()?;
+        }
+        Ok(())
+    }
+
     pub fn delete_session(&self, id: &str) -> Result<()> {
         self.sessions.remove(id.as_bytes())?;
         let prefix = format!("{}_", id);

@@ -11,16 +11,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().style(Style::default().fg(Color::Green));
 
     let scroll_indicator = if !app.follow_bottom {
-        " [SCROLL LOCK] "
+        " [LOCK] "
     } else {
         ""
     };
 
     let left = format!(
-        "[Ctrl+P] Attach  |  [Ctrl+M] Model  |  [Ctrl+N] New Session{}",
+        "[P] Attach  |  [S] Sess  |  [M] Model  |  [N] New{}",
         scroll_indicator
     );
-    let right = "[Ctrl+D] Detach  |  [Ctrl+Q] Quit";
+    let right = "[D] Detach  |  [Q] Quit";
 
     let line = Line::from(vec![
         Span::styled(left, Style::default().fg(Color::Green)),

@@ -13,12 +13,23 @@ use ratatui::{
 };
 use crate::app::{App, AppState};
 
+const MULTIMODAL_MODELS: &[&str] = &[
+    "glm-5", "glm-5.1",
+    "kimi-k2.5", "kimi-k2.6",
+    "mimo-v2.5", "mimo-v2.5-pro",
+    "qwen3.5-plus", "qwen3.6-plus",
+];
+
 pub fn render(frame: &mut Frame, app: &mut App) {
     match app.state {
         AppState::ApiKeyInput => render_key_input(frame, app),
         AppState::SelectingModel => {
             render_main(frame, app);
             render_model_selection(frame, app);
+        }
+        AppState::SessionList => {
+            render_main(frame, app);
+            render_session_list(frame, app);
         }
         AppState::PickingFile => {
             render_main(frame, app);
@@ -110,12 +121,17 @@ fn render_model_selection(frame: &mut Frame, app: &App) {
         .iter()
         .map(|model| {
             let prefix = if *model == app.model { " > " } else { "   " };
-            let style = if *model == app.model {
+            let base_style = if *model == app.model {
                 Style::default().fg(Color::Rgb(255, 176, 0))
             } else {
                 Style::default().fg(Color::Green)
             };
-            ListItem::new(format!("{}{}", prefix, model)).style(style)
+            let img_tag = if MULTIMODAL_MODELS.contains(&model.as_str()) {
+                " [IMG]"
+            } else {
+                ""
+            };
+            ListItem::new(format!("{}{}{}", prefix, model, img_tag)).style(base_style)
         })
         .collect();
 
@@ -136,6 +152,81 @@ fn render_model_selection(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, popup_area, &mut list_state);
 
     let hint = " [Up/Down] Navigate  [Enter] Confirm  [Esc] Skip ";
+    let hint_area = Rect::new(popup_area.x, popup_area.bottom(), popup_area.width, 1);
+    let hint_widget = Paragraph::new(hint)
+        .style(Style::default().fg(Color::Green))
+        .alignment(Alignment::Center);
+    frame.render_widget(hint_widget, hint_area);
+}
+
+fn render_session_list(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    let popup_height = (app.sessions.len() as u16 + 4).min(area.height.saturating_sub(4));
+
+    let popup_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(30),
+            Constraint::Length(popup_height),
+            Constraint::Percentage(30),
+        ])
+        .split(area)[1];
+
+    let popup_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(20),
+            Constraint::Length(50),
+            Constraint::Percentage(20),
+        ])
+        .split(popup_area)[1];
+
+    frame.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = app
+        .sessions
+        .iter()
+        .map(|session| {
+            let is_active = session.id == app.active_session_id;
+            let prefix = if is_active { " > " } else { "   " };
+            let style = if is_active {
+                Style::default().fg(Color::Rgb(255, 176, 0))
+            } else {
+                Style::default().fg(Color::Green)
+            };
+
+            let ts = chrono::DateTime::from_timestamp(session.created_at as i64, 0)
+                .map(|dt| dt.format("%b %d %H:%M").to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let title = if session.title.len() > 32 {
+                format!("{}...", &session.title[..32])
+            } else {
+                session.title.clone()
+            };
+
+            ListItem::new(format!("{}{}  {}", prefix, title, ts)).style(style)
+        })
+        .collect();
+
+    let mut list_state = ListState::default().with_selected(Some(app.session_selection_index));
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_set(ratatui::symbols::border::ROUNDED)
+                .style(Style::default().fg(Color::Green))
+                .title(" SESSIONS ")
+                .title_alignment(Alignment::Center),
+        )
+        .style(Style::default().fg(Color::Green))
+        .highlight_style(Style::default().fg(Color::Rgb(255, 176, 0)));
+
+    frame.render_stateful_widget(list, popup_area, &mut list_state);
+
+    let hint = " [Up/Down] Navigate  [Enter] Switch  [Esc] Cancel ";
     let hint_area = Rect::new(popup_area.x, popup_area.bottom(), popup_area.width, 1);
     let hint_widget = Paragraph::new(hint)
         .style(Style::default().fg(Color::Green))
