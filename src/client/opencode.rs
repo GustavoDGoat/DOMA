@@ -3,6 +3,32 @@ use anyhow::Result;
 use futures_util::StreamExt;
 use std::time::Duration;
 
+fn parse_stream_line(json_str: &str) -> Vec<Result<StreamChunk, ClientError>> {
+    if let Ok(chunk) = serde_json::from_str::<StreamChunk>(json_str) {
+        return vec![Ok(chunk)];
+    }
+
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+        if let Some(error_obj) = val.get("error") {
+            let msg = error_obj
+                .get("message")
+                .and_then(|v| v.as_str())
+                .or_else(|| error_obj.as_str())
+                .unwrap_or("Unknown API error");
+            return vec![Err(ClientError::Stream(msg.to_string()))];
+        }
+    }
+
+    if json_str.trim().is_empty() {
+        return vec![];
+    }
+
+    vec![Err(ClientError::Stream(format!(
+        "Unexpected response: {}",
+        &json_str[..json_str.len().min(200)]
+    )))]
+}
+
 pub struct OpenCodeClient {
     client: reqwest::Client,
     base_url: String,
@@ -12,7 +38,7 @@ pub struct OpenCodeClient {
 impl OpenCodeClient {
     pub fn new(base_url: &str, api_key: &str) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(120))
             .build()
             .expect("reqwest client should build");
 
@@ -99,12 +125,11 @@ impl OpenCodeClient {
 
                         let json_str = trimmed.strip_prefix("data: ").unwrap_or(&trimmed);
 
-                        let items = match serde_json::from_str::<StreamChunk>(json_str) {
-                            Ok(chunk) => vec![Ok(chunk)],
-                            Err(e) => {
-                                vec![Err(ClientError::Stream(format!("Parse error: {}", e)))]
-                            }
-                        };
+                        let items = parse_stream_line(json_str);
+
+                        if items.is_empty() {
+                            continue;
+                        }
 
                         return Some((items, (buffer, byte_stream)));
                     }
@@ -128,14 +153,7 @@ impl OpenCodeClient {
                                 }
                                 let json_str =
                                     trimmed.strip_prefix("data: ").unwrap_or(&trimmed);
-                                let items =
-                                    match serde_json::from_str::<StreamChunk>(json_str) {
-                                        Ok(chunk) => vec![Ok(chunk)],
-                                        Err(e) => vec![Err(ClientError::Stream(format!(
-                                            "Parse error: {}",
-                                            e
-                                        )))],
-                                    };
+                                let items = parse_stream_line(json_str);
                                 return Some((items, (String::new(), byte_stream)));
                             }
                             return None;
